@@ -408,8 +408,9 @@ td.c-code.copied .code-badge {
    Each block lays out its own columns, so row-1 widths are independent of
    row 2 below. */
 .filter-row1 { display: flex; gap: 12px; align-items: end; margin-bottom: 12px; }
-.fr1-dropdowns { flex: 60 1 0; min-width: 0; display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
-.fr1-searches  { flex: 40 1 0; min-width: 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.fr1-dropdowns { flex: 60 1 0; min-width: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; align-items: end; }
+.fr1-searches  { flex: 40 1 0; min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; align-items: end; }
+.fr1-dropdowns > .filter-group, .fr1-searches > .filter-group { min-width: 0; }
 
 /* Row 2 — GL Dictionary box. The 276px reserved for the row count + the 14px
    gap + 2px left padding reproduce the collapsed row's 290px right / 2px left
@@ -507,12 +508,12 @@ body:not([data-tab="labour"]) .summary-btn { display: none; }
 /* ── MULTISELECT (checkbox dropdown) ─────────────────────────────────── */
 .ms { position: relative; }
 .ms-toggle {
-  width: 100%; min-height: 28px;
+  width: 100%; height: 28px;
   background: #0f1c35; border: 1px solid #2e4070; border-radius: 4px;
   color: #d0dff8; padding: 4px 22px 4px 8px;
   font-size: 8.5pt; font-family: 'Source Sans 3', Calibri, sans-serif;
   cursor: pointer; text-align: left;
-  display: flex; flex-wrap: wrap; gap: 3px; align-items: center;
+  display: flex; flex-wrap: nowrap; gap: 3px; align-items: center;
 }
 .ms-toggle:hover { border-color: #3a5290; }
 .ms-toggle.open  { border-color: var(--accent); }
@@ -527,12 +528,14 @@ body:not([data-tab="labour"]) .summary-btn { display: none; }
   padding: 1px 5px; font-size: 7pt;
   white-space: nowrap; max-width: 100%;
   overflow: hidden; text-overflow: ellipsis;
+  flex: 0 1 auto; min-width: 0;
 }
 .ms-chip-count {
   background: rgba(200,168,75,.15); color: var(--accent);
   border: 1px solid rgba(200,168,75,.4); border-radius: 3px;
   padding: 1px 6px; font-size: 7pt; font-weight: 600;
   font-family: 'IBM Plex Mono', monospace;
+  white-space: nowrap; flex: 0 0 auto;
 }
 .ms-panel {
   display: none; position: absolute;
@@ -1148,6 +1151,7 @@ body[data-tab="setup"] #app { display: none; }
     <div class="setup-card-subtitle">Export everything at once, run a cross-table integrity analysis to confirm the loaded tables agree with each other, or reset the whole application.</div>
     <div class="maint-row">
       <button class="maint-btn" id="maint-export-all" disabled title="Download every loaded table in one Excel workbook">⬇ Export All Tables</button>
+      <button class="maint-btn" id="maint-xls-budget" disabled title="Download the Code of Accounts (both tabs, same as the XLS button) with a Budget column from the Cost file">💲 Code of Accounts + Budget (Excel)</button>
       <button class="maint-btn" id="maint-integrity" disabled title="Analyse all loaded tables and their cross-references; download as Excel">🔍 Data Integrity Analysis (Excel)</button>
       <div class="maint-sep"></div>
       <button class="maint-btn danger" id="maint-reset-all" disabled title="Clear ALL tables and reset the application">⟲ Reset Application</button>
@@ -3989,6 +3993,8 @@ function refreshMaintenanceButtons() {
   ["maint-export-all", "maint-integrity", "maint-reset-all"].forEach(id => {
     const b = document.getElementById(id); if (b) b.disabled = !anyData;
   });
+  const xb = document.getElementById("maint-xls-budget");
+  if (xb) xb.disabled = !(typeof REPORT_STATE !== "undefined" && REPORT_STATE.ready && IMPORT_STORE.costs);
 }
 
 // Two-click confirm for destructive buttons.
@@ -4019,6 +4025,8 @@ function wireSetupMaintenance() {
 
   const ea = document.getElementById("maint-export-all");
   if (ea) ea.addEventListener("click", exportAllTables);
+  const xb = document.getElementById("maint-xls-budget");
+  if (xb) xb.addEventListener("click", downloadXlsBudget);
   const ig = document.getElementById("maint-integrity");
   if (ig) ig.addEventListener("click", downloadIntegrityAnalysis);
   const ra = document.getElementById("maint-reset-all");
@@ -4175,6 +4183,7 @@ function rebuildReportData() {
   if (missing.length) {
     ALL_DATA = [];
     REPORT_STATE = { ready: false, missing, unmatchedZitems: 0, nonExpense: 0 };
+    if (typeof refreshMaintenanceButtons === "function") refreshMaintenanceButtons();
     return;
   }
 
@@ -4183,6 +4192,12 @@ function rebuildReportData() {
   const byCode = wbs.byCode;
   const expenseIds = cost
     ? new Set(cost.rows.filter(r => normHeader(r.txnType) === "expense").map(r => r.wbsId))
+    : null;
+  // Budget per task row = Quantity × Unit Price, keyed by the project WBS Id.
+  // The report's zitemCode is the *standardized* WBS code (t.zitem), NOT the
+  // WBS Id, so the Cost↔report join must go through the Task row's wbsId.
+  const costByWbsId = cost
+    ? new Map(cost.rows.map(r => [r.wbsId, (Number(r.qty) || 0) * (Number(r.unitPrice) || 0)]))
     : null;
 
   let unmatched = 0, nonExpense = 0;
@@ -4202,6 +4217,7 @@ function rebuildReportData() {
       glL1: g ? g.l1Desc : "",     glL2: g ? g.l2Desc : "",
       glL1Code: g ? g.l1Code : "", glL2Code: g ? g.l2Code : "",   // resilient code-based filtering
       code: t.zitem + "." + t.glCode,
+      budget: (costByWbsId && costByWbsId.has(t.wbsId)) ? costByWbsId.get(t.wbsId) : null,
     });
   });
 
@@ -4212,6 +4228,7 @@ function rebuildReportData() {
 
   ALL_DATA = rows;
   REPORT_STATE = { ready: true, missing: [], unmatchedZitems: unmatched, nonExpense };
+  if (typeof refreshMaintenanceButtons === "function") refreshMaintenanceButtons();
 }
 
 function refreshReport() {
@@ -4300,17 +4317,16 @@ function msRenderToggle(root) {
     span.className = "ms-placeholder";
     span.textContent = "All";
     toggle.appendChild(span);
-  } else if (sel.size <= 2) {
-    [...sel].forEach(v => {
-      const chip = document.createElement("span");
-      chip.className = "ms-chip";
-      chip.textContent = labelByValue.get(v) || v;
-      toggle.appendChild(chip);
-    });
+  } else if (sel.size === 1) {
+    const v = [...sel][0];
+    const chip = document.createElement("span");
+    chip.className = "ms-chip";
+    chip.textContent = labelByValue.get(v) || v;
+    toggle.appendChild(chip);
   } else {
     const chip = document.createElement("span");
     chip.className = "ms-chip-count";
-    chip.textContent = sel.size + " selected";
+    chip.textContent = String(sel.size);
     toggle.appendChild(chip);
   }
 }
@@ -4673,6 +4689,120 @@ function pdfDateStamp() {
 //      needed to reproduce the report (group by L1 → L2 → Item → GL Code).
 // Both tabs reflect the CURRENT view (active tab + filters), so the workbook
 // always matches what the user is looking at.
+// The budget for a report row is attached at build time (rebuildReportData):
+// Quantity × Unit Price from the Cost file, joined to the row through its Task
+// WBS Id. Blank (not zero) when the row has no matching cost.
+function budgetFor(r) {
+  return typeof r.budget === "number" ? r.budget : "";
+}
+
+// Shared engine for the two-tab Code of Accounts workbook. Pass withBudget to
+// append a numeric Budget column to BOTH the grouped "Code of Accounts" sheet
+// and the flat "Data" sheet.
+function buildCoaWorkbook(XLSX, rows, withBudget) {
+  const proj = projectMeta.projectCode || "1253";
+  const actCode = r => `${proj}.${r.code}`;
+  const moneyFmt = "#,##0";
+
+  // ── Tab 1: Code of Accounts, as shown (grouped + merged) ──────────────
+  const head1 = ["", "", "WBS", "GL Description", "Activity Code"];
+  if (withBudget) head1.push("Budget");
+  const aoa1 = [
+    [currentDocTitle()],
+    [proj + (projectMeta.projectName ? "  " + projectMeta.projectName : "")],
+    ["Report Date", projectMeta.reportDate || ""],
+    [],
+    head1,
+  ];
+  const H = aoa1.length;   // index of the first data row
+  rows.forEach((r, i) => {
+    const p = rows[i - 1];
+    const l1First  = i === 0 || p.l1Code !== r.l1Code;
+    const l2First  = l1First || p.l2Code !== r.l2Code;
+    const wbsFirst = l2First || p.zitemCode !== r.zitemCode;
+    const row = [
+      l1First  ? r.l1    : "",
+      l2First  ? r.l2    : "",
+      wbsFirst ? r.zitem : "",
+      r.gl,
+      actCode(r),
+    ];
+    if (withBudget) row.push(budgetFor(r));
+    aoa1.push(row);
+  });
+  const ws1 = XLSX.utils.aoa_to_sheet(aoa1);
+  const cols1 = [{ wch: 22 }, { wch: 30 }, { wch: 34 }, { wch: 44 }, { wch: 22 }];
+  if (withBudget) cols1.push({ wch: 16 });
+  ws1["!cols"] = cols1;
+
+  // Merge the grouped label columns across their consecutive runs, plus the
+  // title row across every column.
+  const lastCol1 = head1.length - 1;
+  const merges = [{ s: { r: 0, c: 0 }, e: { r: 0, c: lastCol1 } }];
+  const keyOf = [
+    r => r.l1Code,
+    r => r.l1Code + "|" + r.l2Code,
+    r => r.l1Code + "|" + r.l2Code + "|" + r.zitemCode,
+  ];
+  keyOf.forEach((kf, col) => {
+    let start = 0;
+    for (let i = 1; i <= rows.length; i++) {
+      if (i === rows.length || kf(rows[i]) !== kf(rows[i - 1])) {
+        if (i - start > 1) merges.push({ s: { r: H + start, c: col }, e: { r: H + i - 1, c: col } });
+        start = i;
+      }
+    }
+  });
+  ws1["!merges"] = merges;
+  if (withBudget) {
+    for (let i = 0; i < rows.length; i++) {
+      const cell = ws1[XLSX.utils.encode_cell({ r: H + i, c: lastCol1 })];
+      if (cell && typeof cell.v === "number") cell.z = moneyFmt;
+    }
+  }
+
+  // ── Tab 2: flat, pivot-ready data table ───────────────────────────────
+  const headers2 = [
+    "Project Code",
+    "WBS L1 Code", "WBS L1 Description",
+    "WBS L2 Code", "WBS L2 Description",
+    "WBS Item Code", "WBS Item Name",
+    "GL Code", "GL Description",
+    "GL L1 Header", "GL L2 Header",
+    "Activity Code",
+  ];
+  if (withBudget) headers2.push("Budget");
+  const aoa2 = [headers2];
+  rows.forEach(r => {
+    const row = [
+      proj,
+      r.l1Code, r.l1,
+      r.l2Code, r.l2,
+      r.zitemCode, r.zitem,
+      r.glCode, r.gl,
+      r.glL1 || "", r.glL2 || "",
+      actCode(r),
+    ];
+    if (withBudget) row.push(budgetFor(r));
+    aoa2.push(row);
+  });
+  const ws2 = XLSX.utils.aoa_to_sheet(aoa2);
+  ws2["!cols"] = headers2.map(h => ({ wch: Math.max(12, h.length + 2) }));
+  ws2["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length, c: headers2.length - 1 } }) };
+  if (withBudget) {
+    const bcol = headers2.length - 1;
+    for (let i = 0; i < rows.length; i++) {
+      const cell = ws2[XLSX.utils.encode_cell({ r: 1 + i, c: bcol })];
+      if (cell && typeof cell.v === "number") cell.z = moneyFmt;
+    }
+  }
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws1, "Code of Accounts");
+  XLSX.utils.book_append_sheet(wb, ws2, "Data");
+  return wb;
+}
+
 async function downloadXls() {
   if (!REPORT_STATE.ready) {
     alert("There's no report to export yet — import the required data on the Setup tab first.");
@@ -4687,83 +4817,8 @@ async function downloadXls() {
   showToast("Building Excel workbook…");
   try {
     const XLSX = await ensureXlsxOut();
+    const wb = buildCoaWorkbook(XLSX, EXPORT_ROWS, false);
     const proj = projectMeta.projectCode || "1253";
-    const rows = EXPORT_ROWS;
-    const actCode = r => `${proj}.${r.code}`;
-
-    // ── Tab 1: Code of Accounts, as shown (grouped + merged) ──────────────
-    const aoa1 = [
-      [currentDocTitle()],
-      [proj + (projectMeta.projectName ? "  " + projectMeta.projectName : "")],
-      ["Report Date", projectMeta.reportDate || ""],
-      [],
-      ["", "", "WBS", "GL Description", "Activity Code"],
-    ];
-    const H = aoa1.length;   // index of the first data row
-    rows.forEach((r, i) => {
-      const p = rows[i - 1];
-      const l1First  = i === 0 || p.l1Code !== r.l1Code;
-      const l2First  = l1First || p.l2Code !== r.l2Code;
-      const wbsFirst = l2First || p.zitemCode !== r.zitemCode;
-      aoa1.push([
-        l1First  ? r.l1    : "",
-        l2First  ? r.l2    : "",
-        wbsFirst ? r.zitem : "",
-        r.gl,
-        actCode(r),
-      ]);
-    });
-    const ws1 = XLSX.utils.aoa_to_sheet(aoa1);
-    ws1["!cols"] = [{ wch: 22 }, { wch: 30 }, { wch: 34 }, { wch: 44 }, { wch: 22 }];
-
-    // Merge the grouped label columns across their consecutive runs, plus the
-    // title row across all five columns.
-    const merges = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 4 } }];
-    const keyOf = [
-      r => r.l1Code,
-      r => r.l1Code + "|" + r.l2Code,
-      r => r.l1Code + "|" + r.l2Code + "|" + r.zitemCode,
-    ];
-    keyOf.forEach((kf, col) => {
-      let start = 0;
-      for (let i = 1; i <= rows.length; i++) {
-        if (i === rows.length || kf(rows[i]) !== kf(rows[i - 1])) {
-          if (i - start > 1) merges.push({ s: { r: H + start, c: col }, e: { r: H + i - 1, c: col } });
-          start = i;
-        }
-      }
-    });
-    ws1["!merges"] = merges;
-
-    // ── Tab 2: flat, pivot-ready data table ───────────────────────────────
-    const headers2 = [
-      "Project Code",
-      "WBS L1 Code", "WBS L1 Description",
-      "WBS L2 Code", "WBS L2 Description",
-      "WBS Item Code", "WBS Item Name",
-      "GL Code", "GL Description",
-      "GL L1 Header", "GL L2 Header",
-      "Activity Code",
-    ];
-    const aoa2 = [headers2];
-    rows.forEach(r => aoa2.push([
-      proj,
-      r.l1Code, r.l1,
-      r.l2Code, r.l2,
-      r.zitemCode, r.zitem,
-      r.glCode, r.gl,
-      r.glL1 || "", r.glL2 || "",
-      actCode(r),
-    ]));
-    const ws2 = XLSX.utils.aoa_to_sheet(aoa2);
-    ws2["!cols"] = headers2.map(h => ({ wch: Math.max(12, h.length + 2) }));
-    // Autofilter on the header row makes the table immediately pivot-friendly.
-    ws2["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length, c: headers2.length - 1 } }) };
-
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws1, "Code of Accounts");
-    XLSX.utils.book_append_sheet(wb, ws2, "Data");
-
     const fileName = `${proj} - Project Code of Accounts - ${variantFileLabel()} - ${pdfDateStamp()}.xlsx`;
     XLSX.writeFile(wb, fileName);
     showToast(`Downloaded ${fileName}`);
@@ -4771,6 +4826,41 @@ async function downloadXls() {
     showToast("Excel export failed: " + err.message, 5000);
   } finally {
     if (xlsBtn) xlsBtn.disabled = false;
+  }
+}
+
+// Setup ▸ Maintenance: the same two-tab Code of Accounts workbook as the
+// filter-bar XLS button, WITH a Budget column on both tabs sourced from the
+// imported Cost file (Quantity × Unit Price per activity).
+async function downloadXlsBudget() {
+  if (!REPORT_STATE.ready) {
+    alert("There's no report to export yet — import the required data on the Setup tab first.");
+    return;
+  }
+  if (!IMPORT_STORE.costs || !IMPORT_STORE.costs.rows || !IMPORT_STORE.costs.rows.length) {
+    alert("The Cost file hasn't been imported yet — import the Task & Cost data first so budget values are available.");
+    return;
+  }
+  const rows = (EXPORT_ROWS && EXPORT_ROWS.length) ? EXPORT_ROWS : ALL_DATA;
+  if (!rows.length) {
+    alert("There are no rows to export.");
+    return;
+  }
+  const btn = document.getElementById("maint-xls-budget");
+  if (btn) btn.disabled = true;
+  showToast("Building Excel workbook with budget…");
+  try {
+    const XLSX = await ensureXlsxOut();
+    const wb = buildCoaWorkbook(XLSX, rows, true);
+    const proj = projectMeta.projectCode || "1253";
+    const fileName = `${proj} - Project Code of Accounts with Budget - ${variantFileLabel()} - ${pdfDateStamp()}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+    showToast(`Downloaded ${fileName}`);
+  } catch (err) {
+    showToast("Excel export failed: " + err.message, 5000);
+  } finally {
+    if (btn) btn.disabled = false;
+    refreshMaintenanceButtons();
   }
 }
 
